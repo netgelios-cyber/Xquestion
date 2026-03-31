@@ -22,7 +22,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     
     steps:
       - name: Checkout Amnezia Client
@@ -38,7 +38,7 @@ jobs:
         with:
           path: custom_files
       
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -70,43 +70,26 @@ jobs:
             git \
             wget \
             unzip \
-            libxcb-cursor0 \
-            libxcb-cursor-dev
+            openjdk-17-jdk
       
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      - name: Download Android SDK
+        run: |
+          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip commandlinetools-linux-11076708_latest.zip -d $HOME/android-sdk
+          echo "y" | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android-sdk --licenses
+          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android-sdk "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
       
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.6.2'
-          host: 'linux'
-          target: 'desktop'
-          arch: 'gcc_64'
-          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
-          dir: '${{ github.workspace }}/qt_host'
-          install-deps: 'true'
-          cache: 'true'
-      
-      - name: Install Qt for Android
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.6.2'
-          host: 'linux'
-          target: 'android'
-          arch: 'android_arm64_v8a'
-          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
-          dir: '${{ github.workspace }}/qt_android'
-          install-deps: 'true'
-          cache: 'true'
-      
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
+      - name: Download Qt for Android
+        run: |
+          wget https://download.qt.io/official_releases/qt/6.6/6.6.2/submodules/qtbase-everywhere-src-6.6.2.tar.xz
+          tar -xf qtbase-everywhere-src-6.6.2.tar.xz
+          cd qtbase-everywhere-src-6.6.2
+          mkdir build && cd build
+          ../configure -prefix $HOME/qt-android -xplatform android-clang -android-ndk $ANDROID_HOME/ndk/25.2.9519653 -android-sdk $ANDROID_HOME -android-abi arm64-v8a -release -nomake tests -nomake examples
+          make -j$(nproc)
+          make install
+          echo "QT_ANDROID_DIR=$HOME/qt-android" >> $GITHUB_ENV
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -119,26 +102,10 @@ jobs:
           gomobile init
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
       
-      - name: Set Qt Paths
-        id: qt_paths
-        run: |
-          # Ищем пути к Qt
-          QT_ANDROID_BASE=$(find ${{ github.workspace }}/qt_android -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
-          QT_HOST_BASE=$(find ${{ github.workspace }}/qt_host -type d -name "gcc_64" 2>/dev/null | head -1)
-          
-          echo "qt_android_base=$QT_ANDROID_BASE" >> $GITHUB_OUTPUT
-          echo "qt_host_base=$QT_HOST_BASE" >> $GITHUB_OUTPUT
-          echo "qt_android_cmake=$QT_ANDROID_BASE/lib/cmake/Qt6" >> $GITHUB_OUTPUT
-          
-          echo "Found Qt Android: $QT_ANDROID_BASE"
-          echo "Found Qt Host: $QT_HOST_BASE"
-          echo "Qt6_DIR: $QT_ANDROID_BASE/lib/cmake/Qt6"
-      
       - name: Replace App Name
         run: |
           cd amnezia-client
           find . -name "strings.xml" -path "*/android-app/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
-          find . -name "strings.xml" -path "*/values-ru/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \; 2>/dev/null || true
       
       - name: Replace Icons
         run: |
@@ -152,7 +119,6 @@ jobs:
             cp "custom_files/logo.png" logo.png
           else
             echo "ERROR: Logo not found"
-            ls -la custom_files/
             exit 1
           fi
           
@@ -164,7 +130,6 @@ jobs:
             [[ "$dir" == *"xxhdpi"* ]] && size=144
             [[ "$dir" == *"xxxhdpi"* ]] && size=192
             convert ../logo.png -resize ${size}x${size} "$dir/ic_launcher.png" 2>/dev/null || true
-            cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
           done
       
       - name: Add Auto-Config Feature
@@ -173,7 +138,6 @@ jobs:
           CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -1)
           if [ -n "$CORE_DIR" ]; then
             mkdir -p "$CORE_DIR/api"
-            
             cat > "$CORE_DIR/api/auto_config.cpp" << 'EOF'
           #include <QNetworkAccessManager>
           #include <QNetworkReply>
@@ -181,36 +145,24 @@ jobs:
           #include <QJsonObject>
           #include <QSettings>
           #include <QEventLoop>
-          #include <QDebug>
           
           void autoFetchConfig() {
               QSettings settings;
               if (settings.value("configured", false).toBool()) return;
               
-              QString apiEndpoint = "${{ github.event.inputs.api_endpoint }}";
-              QString apiKey = "${{ github.event.inputs.api_key }}";
-              
               QNetworkAccessManager mgr;
-              QUrl url(apiEndpoint);
+              QUrl url("${{ github.event.inputs.api_endpoint }}");
               QNetworkRequest req(url);
-              req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-              req.setRawHeader("x-api-key", apiKey.toUtf8());
-              
-              QJsonObject payload;
-              payload["public_key"] = "auto";
+              req.setRawHeader("x-api-key", "${{ github.event.inputs.api_key }}");
               
               QEventLoop loop;
-              QNetworkReply *reply = mgr.post(req, QJsonDocument(payload).toJson());
+              QNetworkReply *reply = mgr.post(req, "{}");
               QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
               loop.exec();
               
               if (reply->error() == QNetworkReply::NoError) {
-                  QByteArray data = reply->readAll();
-                  settings.setValue("config", data);
+                  settings.setValue("config", reply->readAll());
                   settings.setValue("configured", true);
-                  qDebug() << "Auto-config loaded successfully from:" << apiEndpoint;
-              } else {
-                  qDebug() << "Auto-config failed:" << reply->errorString();
               }
               reply->deleteLater();
           }
@@ -222,35 +174,12 @@ jobs:
           cd amnezia-client
           mkdir -p build && cd build
           
-          QT_ANDROID="${{ steps.qt_paths.outputs.qt_android_base }}"
-          QT_HOST="${{ steps.qt_paths.outputs.qt_host_base }}"
-          QT6_DIR="${{ steps.qt_paths.outputs.qt_android_cmake }}"
-          ANDROID_HOME=/usr/local/lib/android/sdk
-          
-          echo "QT_ANDROID: $QT_ANDROID"
-          echo "QT_HOST: $QT_HOST"
-          echo "QT6_DIR: $QT6_DIR"
-          
-          # Проверяем, что Qt6Config.cmake существует
-          if [ ! -f "$QT6_DIR/Qt6Config.cmake" ]; then
-            echo "ERROR: Qt6Config.cmake not found at $QT6_DIR"
-            find $QT_ANDROID -name "Qt6Config.cmake" 2>/dev/null
-            exit 1
-          fi
-          
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$QT_ANDROID" \
-            -DQt6_DIR="$QT6_DIR" \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-33 \
-            -DQT_HOST_PATH="$QT_HOST"
-          
-          if [ $? -ne 0 ]; then
-            echo "CMake configuration failed"
-            exit 1
-          fi
+            -DCMAKE_PREFIX_PATH=$QT_ANDROID_DIR
           
           cmake --build . --target apk -- -j2
       
