@@ -24,12 +24,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Amnezia Client
         uses: actions/checkout@v4
         with:
           repository: amnezia-vpn/amnezia-client
           submodules: recursive
           fetch-depth: 1
+      
+      - name: Checkout Custom Files
+        uses: actions/checkout@v4
+        with:
+          path: custom_files
       
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -115,17 +120,37 @@ jobs:
       
       - name: Replace Icons
         run: |
-          # Копируем логотип (из URL или из репозитория)
-          if [[ "${{ github.event.inputs.logo_url }}" == http* ]]; then
-            wget -O logo.png "${{ github.event.inputs.logo_url }}"
+          # Копируем логотип из custom_files
+          LOGO_SOURCE="${{ github.event.inputs.logo_url }}"
+          
+          echo "Looking for logo: $LOGO_SOURCE"
+          echo "Current directory: $(pwd)"
+          echo "Custom files directory:"
+          ls -la custom_files/
+          
+          # Проверяем разные варианты пути
+          if [[ "$LOGO_SOURCE" == http* ]]; then
+            echo "Downloading from URL..."
+            wget -O logo.png "$LOGO_SOURCE"
+          elif [ -f "custom_files/$LOGO_SOURCE" ]; then
+            echo "Found in custom_files/$LOGO_SOURCE"
+            cp "custom_files/$LOGO_SOURCE" logo.png
+          elif [ -f "custom_files/logo.png" ]; then
+            echo "Found in custom_files/logo.png"
+            cp "custom_files/logo.png" logo.png
+          elif [ -f "$LOGO_SOURCE" ]; then
+            echo "Found in $LOGO_SOURCE"
+            cp "$LOGO_SOURCE" logo.png
           else
-            cp "${{ github.event.inputs.logo_url }}" logo.png 2>/dev/null || echo "Logo not found: ${{ github.event.inputs.logo_url }}"
+            echo "ERROR: Logo not found"
+            echo "Available files in custom_files:"
+            ls -la custom_files/
+            exit 1
           fi
           
           # Проверяем наличие логотипа
           if [ ! -f logo.png ]; then
-            echo "ERROR: Logo not found at ${{ github.event.inputs.logo_url }}"
-            echo "Make sure the file exists in the repository"
+            echo "ERROR: Logo file missing after copy attempt"
             exit 1
           fi
           
