@@ -45,7 +45,10 @@ jobs:
           host: 'linux'
           target: 'android'
           arch: 'android_arm64_v8a'
-          modules: 'qt5compat'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+          dir: '${{ github.workspace }}/qt'
+          install-deps: 'true'
+          cache: 'true'
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -112,7 +115,8 @@ jobs:
       - name: Build APK
         run: |
           mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
+          export QT_ROOT_DIR=${{ github.workspace }}/qt/6.6.2/android_arm64_v8a
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DQT_HOST_PATH=${{ github.workspace }}/qt/6.6.2/gcc_64
           cmake --build . --target apk -j2
       
       - name: Upload APK
