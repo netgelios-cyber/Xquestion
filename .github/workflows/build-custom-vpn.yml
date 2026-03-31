@@ -1,0 +1,227 @@
+name: Build Custom VPN with Auto-Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Название приложения'
+        required: true
+        default: 'My Secure VPN'
+      logo_url:
+        description: 'Ссылка на логотип (PNG, минимум 512x512)'
+        required: true
+      api_endpoint:
+        description: 'URL вашего API сервера'
+        required: true
+        default: 'http://195.19.153.74:4001/api/v1/request/awg/'
+      api_key:
+        description: 'API ключ'
+        required: true
+        default: '9728d7339e07a64f88a9ec22285e06499be36d61f3416503496fa1267c44fde6'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    
+    steps:
+      - name: Checkout Amnezia Client
+        uses: actions/checkout@v4
+        with:
+          repository: amnezia-vpn/amnezia-client
+          submodules: recursive
+          fetch-depth: 1
+      
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            openjdk-11-jdk \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgl1-mesa-dev \
+            libxcb-util1 \
+            libxcb-util-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-randr0-dev \
+            libxcb-render-util0-dev \
+            libxcb-shape0-dev \
+            libxcb-sync-dev \
+            libxcb-xfixes0-dev \
+            libxcb-xinerama0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libglib2.0-dev \
+            libpulse-dev \
+            libsqlite3-dev \
+            imagemagick
+      
+      - name: Setup Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'android'
+          arch: 'android_arm64_v8a'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+          dir: '${{ github.workspace }}/qt'
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      
+      - name: Install Gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
+      
+      - name: Replace App Name
+        run: |
+          sed -i 's/<string name="app_name">Amnezia VPN<\/string>/<string name="app_name">${{ github.event.inputs.app_name }}<\/string>/g' \
+            client/android-app/src/main/res/values/strings.xml
+          
+          if [ -f client/android-app/src/main/res/values-en/strings.xml ]; then
+            sed -i 's/<string name="app_name">Amnezia VPN<\/string>/<string name="app_name">${{ github.event.inputs.app_name }}<\/string>/g' \
+              client/android-app/src/main/res/values-en/strings.xml
+          fi
+      
+      - name: Replace App Icons
+        run: |
+          wget -O logo.png "${{ github.event.inputs.logo_url }}"
+          
+          sizes=(48 72 96 144 192)
+          dirs=("mipmap-mdpi" "mipmap-hdpi" "mipmap-xhdpi" "mipmap-xxhdpi" "mipmap-xxxhdpi")
+          
+          for i in "${!sizes[@]}"; do
+            convert logo.png -resize ${sizes[$i]}x${sizes[$i]} "icon_${sizes[$i]}.png"
+            cp "icon_${sizes[$i]}.png" "client/android-app/src/main/res/${dirs[$i]}/ic_launcher.png"
+            cp "icon_${sizes[$i]}.png" "client/android-app/src/main/res/${dirs[$i]}/ic_launcher_round.png"
+          done
+      
+      - name: Add Auto-Config Feature
+        run: |
+          mkdir -p client/core/api
+          
+          cat > client/core/api/auto_config_client.h << 'EOF'
+          #ifndef AUTO_CONFIG_CLIENT_H
+          #define AUTO_CONFIG_CLIENT_H
+          
+          #include <QObject>
+          #include <QNetworkAccessManager>
+          #include <QNetworkReply>
+          #include <QJsonDocument>
+          #include <QJsonObject>
+          #include <QSettings>
+          
+          class AutoConfigClient : public QObject
+          {
+              Q_OBJECT
+          public:
+              explicit AutoConfigClient(QObject *parent = nullptr);
+              void fetchConfig();
+              
+          signals:
+              void configReady(const QJsonObject &config);
+              void error(const QString &message);
+              
+          private slots:
+              void onReplyFinished(QNetworkReply *reply);
+              
+          private:
+              QNetworkAccessManager *m_manager;
+              QString m_apiEndpoint;
+              QString m_apiKey;
+          };
+          
+          #endif
+          EOF
+          
+          cat > client/core/api/auto_config_client.cpp << 'EOF'
+          #include "auto_config_client.h"
+          #include <QDebug>
+          
+          AutoConfigClient::AutoConfigClient(QObject *parent)
+              : QObject(parent)
+              , m_manager(new QNetworkAccessManager(this))
+              , m_apiEndpoint("${{ github.event.inputs.api_endpoint }}")
+              , m_apiKey("${{ github.event.inputs.api_key }}")
+          {
+              QSettings settings;
+              if (!settings.value("vpn/auto_configured", false).toBool()) {
+                  fetchConfig();
+              }
+          }
+          
+          void AutoConfigClient::fetchConfig()
+          {
+              QUrl url(m_apiEndpoint);
+              QNetworkRequest request(url);
+              request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+              request.setRawHeader("x-api-key", m_apiKey.toUtf8());
+              
+              QJsonObject payload;
+              payload["public_key"] = "auto";
+              
+              QNetworkReply *reply = m_manager->post(request, QJsonDocument(payload).toJson());
+              connect(reply, &QNetworkReply::finished, this, &AutoConfigClient::onReplyFinished);
+          }
+          
+          void AutoConfigClient::onReplyFinished(QNetworkReply *reply)
+          {
+              if (reply->error() != QNetworkReply::NoError) {
+                  emit error(reply->errorString());
+                  reply->deleteLater();
+                  return;
+              }
+              
+              QByteArray response = reply->readAll();
+              QJsonDocument doc = QJsonDocument::fromJson(response);
+              QJsonObject obj = doc.object();
+              
+              if (obj.contains("config")) {
+                  QSettings settings;
+                  settings.setValue("vpn/config", QJsonDocument(obj).toJson());
+                  settings.setValue("vpn/auto_configured", true);
+                  emit configReady(obj);
+              }
+              
+              reply->deleteLater();
+          }
+          EOF
+          
+          echo "set(SOURCES \${SOURCES} api/auto_config_client.cpp)" >> client/core/CMakeLists.txt
+          echo "set(HEADERS \${HEADERS} api/auto_config_client.h)" >> client/core/CMakeLists.txt
+      
+      - name: Build APK
+        run: |
+          mkdir -p build-android
+          cd build-android
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-33 \
+            -DQT_HOST_PATH=${{ github.workspace }}/qt/6.6.2/gcc_64 \
+            -DQT_ANDROID_ABI=arm64-v8a
+          cmake --build . --target apk --parallel $(nproc)
+      
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-APK
+          path: build-android/*.apk
+          retention-days: 30
