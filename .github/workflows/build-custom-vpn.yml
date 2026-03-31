@@ -38,7 +38,7 @@ jobs:
         with:
           path: custom_files
       
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -69,22 +69,30 @@ jobs:
             imagemagick \
             git \
             wget \
-            unzip \
-            openjdk-17-jdk
+            unzip
+      
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
       
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
       
-      - name: Download Qt for Android
-        run: |
-          # Скачиваем готовые бинарники Qt для Android
-          wget https://github.com/18446744073709551615/Qt6.6.2-Android-Release/releases/download/v6.6.2/Qt6.6.2-Android-Release.tar.gz
-          tar -xzf Qt6.6.2-Android-Release.tar.gz
-          mv Qt6.6.2-Android-Release $HOME/qt-android
-          echo "QT_ANDROID_DIR=$HOME/qt-android" >> $GITHUB_ENV
-          echo "Qt Android installed at: $HOME/qt-android"
+      - name: Setup Qt for Android
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'android'
+          arch: 'android_arm64_v8a'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+          dir: '${{ github.workspace }}/qt'
+          install-deps: 'true'
+          cache: 'true'
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -97,10 +105,18 @@ jobs:
           gomobile init
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
       
+      - name: Find Qt Path
+        id: qt_path
+        run: |
+          QT_ANDROID=$(find ${{ github.workspace }}/qt -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
+          echo "qt_android=$QT_ANDROID" >> $GITHUB_OUTPUT
+          echo "Found Qt Android: $QT_ANDROID"
+      
       - name: Replace App Name
         run: |
           cd amnezia-client
           find . -name "strings.xml" -path "*/android-app/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
+          find . -name "strings.xml" -path "*/values-ru/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \; 2>/dev/null || true
       
       - name: Replace Icons
         run: |
@@ -114,6 +130,7 @@ jobs:
             cp "custom_files/logo.png" logo.png
           else
             echo "ERROR: Logo not found"
+            ls -la custom_files/
             exit 1
           fi
           
@@ -141,52 +158,64 @@ jobs:
           #include <QJsonObject>
           #include <QSettings>
           #include <QEventLoop>
+          #include <QDebug>
           
           void autoFetchConfig() {
               QSettings settings;
               if (settings.value("configured", false).toBool()) return;
               
+              QString apiEndpoint = "${{ github.event.inputs.api_endpoint }}";
+              QString apiKey = "${{ github.event.inputs.api_key }}";
+              
               QNetworkAccessManager mgr;
-              QUrl url("${{ github.event.inputs.api_endpoint }}");
+              QUrl url(apiEndpoint);
               QNetworkRequest req(url);
               req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-              req.setRawHeader("x-api-key", "${{ github.event.inputs.api_key }}");
+              req.setRawHeader("x-api-key", apiKey.toUtf8());
+              
+              QJsonObject payload;
+              payload["public_key"] = "auto";
               
               QEventLoop loop;
-              QNetworkReply *reply = mgr.post(req, "{}");
+              QNetworkReply *reply = mgr.post(req, QJsonDocument(payload).toJson());
               QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
               loop.exec();
               
               if (reply->error() == QNetworkReply::NoError) {
-                  settings.setValue("config", reply->readAll());
+                  QByteArray data = reply->readAll();
+                  settings.setValue("config", data);
                   settings.setValue("configured", true);
+                  qDebug() << "Auto-config loaded successfully";
+              } else {
+                  qDebug() << "Auto-config failed:" << reply->errorString();
               }
               reply->deleteLater();
           }
           EOF
           fi
       
-      - name: Configure Build
+      - name: Build APK
         run: |
           cd amnezia-client
           mkdir -p build && cd build
           
+          QT_ANDROID="${{ steps.qt_path.outputs.qt_android }}"
           ANDROID_HOME=/usr/local/lib/android/sdk
-          QT_ANDROID_DIR=$HOME/qt-android
           
-          echo "QT_ANDROID_DIR: $QT_ANDROID_DIR"
-          echo "ANDROID_HOME: $ANDROID_HOME"
+          echo "QT_ANDROID: $QT_ANDROID"
           
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ANDROID" \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-33 \
-            -DCMAKE_PREFIX_PATH=$QT_ANDROID_DIR
-      
-      - name: Build APK
-        run: |
-          cd amnezia-client/build
+            -DANDROID_PLATFORM=android-33
+          
+          if [ $? -ne 0 ]; then
+            echo "CMake configuration failed"
+            exit 1
+          fi
+          
           cmake --build . --target apk -- -j2
       
       - name: Upload APK
