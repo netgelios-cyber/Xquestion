@@ -6,10 +6,11 @@ on:
       app_name:
         description: 'Название приложения'
         required: true
-        default: 'My VPN'
+        default: 'Xquestion VPN'
       logo_url:
-        description: 'Ссылка на логотип (PNG)'
+        description: 'Путь к логотипу (logo.png или https://...)'
         required: true
+        default: 'logo.png'
       api_endpoint:
         description: 'API endpoint'
         required: true
@@ -28,6 +29,7 @@ jobs:
         with:
           repository: amnezia-vpn/amnezia-client
           submodules: recursive
+          fetch-depth: 1
       
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -40,19 +42,38 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
       
-      - name: Setup Qt for Android
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.6.2'
-          host: 'linux'
-          target: 'android'
-          arch: 'android_arm64_v8a'
-          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
-          dir: '${{ github.workspace }}/qt'
-          install-deps: 'true'
-          cache: 'true'
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgl1-mesa-dev \
+            libxcb-util1 \
+            libxcb-util-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-randr0-dev \
+            libxcb-render-util0-dev \
+            libxcb-shape0-dev \
+            libxcb-sync-dev \
+            libxcb-xfixes0-dev \
+            libxcb-xinerama0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libglib2.0-dev \
+            libpulse-dev \
+            libsqlite3-dev \
+            imagemagick \
+            git
       
-      - name: Setup Qt for Host (Desktop)
+      - name: Setup Qt (Host - Desktop)
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.6.2'
@@ -62,6 +83,19 @@ jobs:
           dir: '${{ github.workspace }}/qt_host'
           install-deps: 'true'
           cache: 'true'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+      
+      - name: Setup Qt (Android)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'android'
+          arch: 'android_arm64_v8a'
+          dir: '${{ github.workspace }}/qt_android'
+          install-deps: 'true'
+          cache: 'true'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -72,47 +106,78 @@ jobs:
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
       
       - name: Replace App Name
         run: |
           find . -name "strings.xml" -path "*/android-app/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
+          find . -name "strings.xml" -path "*/values-ru/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \; 2>/dev/null || true
       
       - name: Replace Icons
         run: |
-          wget -O logo.png "${{ github.event.inputs.logo_url }}"
+          # Копируем логотип (из URL или из репозитория)
+          if [[ "${{ github.event.inputs.logo_url }}" == http* ]]; then
+            wget -O logo.png "${{ github.event.inputs.logo_url }}"
+          else
+            cp "${{ github.event.inputs.logo_url }}" logo.png 2>/dev/null || echo "Logo not found: ${{ github.event.inputs.logo_url }}"
+          fi
+          
+          # Проверяем наличие логотипа
+          if [ ! -f logo.png ]; then
+            echo "ERROR: Logo not found at ${{ github.event.inputs.logo_url }}"
+            echo "Make sure the file exists in the repository"
+            exit 1
+          fi
+          
+          echo "Logo found, processing icons..."
+          
+          # Заменяем иконки
           for dir in $(find . -type d -name "mipmap-*" -path "*/android-app/*"); do
             size=48
             [[ "$dir" == *"hdpi"* ]] && size=72
             [[ "$dir" == *"xhdpi"* ]] && size=96
             [[ "$dir" == *"xxhdpi"* ]] && size=144
             [[ "$dir" == *"xxxhdpi"* ]] && size=192
-            convert logo.png -resize ${size}x${size} "$dir/ic_launcher.png"
+            echo "Processing $dir with size ${size}x${size}"
+            convert logo.png -resize ${size}x${size} "$dir/ic_launcher.png" 2>/dev/null || true
             cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
           done
+          
+          echo "Icons replaced successfully"
       
-      - name: Add Auto-Config
+      - name: Add Auto-Config Feature
         run: |
           CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -1)
           if [ -n "$CORE_DIR" ]; then
             mkdir -p "$CORE_DIR/api"
-            cat > "$CORE_DIR/api/auto_config.cpp" << EOF
+            
+            cat > "$CORE_DIR/api/auto_config.cpp" << 'EOF'
           #include <QNetworkAccessManager>
           #include <QNetworkReply>
           #include <QJsonDocument>
+          #include <QJsonObject>
           #include <QSettings>
           #include <QEventLoop>
+          #include <QDebug>
           
           void autoFetchConfig() {
               QSettings settings;
               if (settings.value("configured", false).toBool()) return;
               
+              QString apiEndpoint = "${{ github.event.inputs.api_endpoint }}";
+              QString apiKey = "${{ github.event.inputs.api_key }}";
+              
               QNetworkAccessManager mgr;
-              QUrl url("${{ github.event.inputs.api_endpoint }}");
+              QUrl url(apiEndpoint);
               QNetworkRequest req(url);
-              req.setRawHeader("x-api-key", "${{ github.event.inputs.api_key }}");
+              req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+              req.setRawHeader("x-api-key", apiKey.toUtf8());
+              
+              QJsonObject payload;
+              payload["public_key"] = "auto";
               
               QEventLoop loop;
-              QNetworkReply *reply = mgr.post(req, "{}");
+              QNetworkReply *reply = mgr.post(req, QJsonDocument(payload).toJson());
               QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
               loop.exec();
               
@@ -120,33 +185,47 @@ jobs:
                   QByteArray data = reply->readAll();
                   settings.setValue("config", data);
                   settings.setValue("configured", true);
+                  qDebug() << "Auto-config loaded successfully from:" << apiEndpoint;
+              } else {
+                  qDebug() << "Auto-config failed:" << reply->errorString();
               }
               reply->deleteLater();
           }
           EOF
+            
+            echo "Auto-config feature added to: $CORE_DIR/api/auto_config.cpp"
+          else
+            echo "WARNING: Core directory not found, auto-config feature skipped"
           fi
       
       - name: Build APK
         run: |
           mkdir -p build && cd build
+          
+          export QT_ROOT_ANDROID=${{ github.workspace }}/qt_android/6.6.2/android_arm64_v8a
+          export QT_ROOT_HOST=${{ github.workspace }}/qt_host/6.6.2/gcc_64
+          
+          echo "QT_ROOT_ANDROID: $QT_ROOT_ANDROID"
+          echo "QT_ROOT_HOST: $QT_ROOT_HOST"
+          echo "ANDROID_HOME: $ANDROID_HOME"
+          
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DQT_HOST_PATH=${{ github.workspace }}/qt_host/6.6.2/gcc_64 \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_ANDROID" \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-33
-          cmake --build . --target apk -j2
-      
-      - name: Find and Upload APK
-        run: |
-          echo "Searching for APK files..."
-          find . -name "*.apk" -type f
-          APK_PATH=$(find . -name "*.apk" -type f | grep -v "unaligned" | head -n 1)
-          if [ -n "$APK_PATH" ]; then
-            echo "APK found at: $APK_PATH"
-            cp "$APK_PATH" ./app.apk
-          else
-            echo "No APK found"
+            -DANDROID_PLATFORM=android-33 \
+            -DQT_HOST_PATH="$QT_ROOT_HOST"
+          
+          if [ $? -ne 0 ]; then
+            echo "CMake configuration failed"
+            exit 1
+          fi
+          
+          cmake --build . --target apk -- -j2
+          
+          if [ $? -ne 0 ]; then
+            echo "Build failed"
             exit 1
           fi
       
@@ -154,5 +233,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-VPN
-          path: ./app.apk
+          path: build/*.apk
           retention-days: 30
