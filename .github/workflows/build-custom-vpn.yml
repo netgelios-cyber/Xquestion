@@ -78,7 +78,19 @@ jobs:
             imagemagick \
             git
       
-      - name: Setup Qt
+      - name: Setup Qt (Host - Desktop)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'gcc_64'
+          dir: '${{ github.workspace }}/qt'
+          install-deps: 'true'
+          cache: 'true'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+      
+      - name: Setup Qt (Android)
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.6.2'
@@ -93,26 +105,15 @@ jobs:
       - name: Find Qt paths
         id: find_qt
         run: |
-          echo "Looking for Qt installations..."
-          find ${{ github.workspace }} -name "Qt6Config.cmake" 2>/dev/null
-          echo "Qt directory contents:"
-          ls -la ${{ github.workspace }}/qt/ || true
-          echo "Qt android directory:"
-          ls -la ${{ github.workspace }}/qt/*/android_* 2>/dev/null || true
+          # Ищем пути к Qt
+          QT_ANDROID_PATH=$(find ${{ github.workspace }}/qt -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
+          QT_HOST_PATH=$(find ${{ github.workspace }}/qt -type d -name "gcc_64" 2>/dev/null | head -1)
           
-          # Находим путь к Qt Android
-          QT_ANDROID_PATH=$(find ${{ github.workspace }} -path "*/android_arm64_v8a/lib/cmake/Qt6" -type d 2>/dev/null | head -1)
-          if [ -n "$QT_ANDROID_PATH" ]; then
-            echo "qt_android_path=${QT_ANDROID_PATH%/*}" >> $GITHUB_OUTPUT
-            echo "Found Qt Android: ${QT_ANDROID_PATH%/*}"
-          fi
+          echo "Found Qt Android: $QT_ANDROID_PATH"
+          echo "Found Qt Host: $QT_HOST_PATH"
           
-          # Находим путь к Qt Host
-          QT_HOST_PATH=$(find ${{ github.workspace }} -path "*/gcc_64/lib/cmake/Qt6" -type d 2>/dev/null | head -1)
-          if [ -n "$QT_HOST_PATH" ]; then
-            echo "qt_host_path=${QT_HOST_PATH%/*}" >> $GITHUB_OUTPUT
-            echo "Found Qt Host: ${QT_HOST_PATH%/*}"
-          fi
+          echo "qt_android_path=$QT_ANDROID_PATH" >> $GITHUB_OUTPUT
+          echo "qt_host_path=$QT_HOST_PATH" >> $GITHUB_OUTPUT
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -209,14 +210,11 @@ jobs:
         run: |
           mkdir -p build && cd build
           
-          # Получаем пути из предыдущего шага
           QT_ANDROID_PATH="${{ steps.find_qt.outputs.qt_android_path }}"
           QT_HOST_PATH="${{ steps.find_qt.outputs.qt_host_path }}"
           
           if [ -z "$QT_ANDROID_PATH" ]; then
             echo "ERROR: Qt Android path not found"
-            echo "Searching for Qt..."
-            find ${{ github.workspace }} -name "Qt6Config.cmake" 2>/dev/null
             exit 1
           fi
           
