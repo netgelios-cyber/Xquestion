@@ -22,7 +22,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
       - name: Checkout Amnezia Client
@@ -72,24 +72,19 @@ jobs:
             unzip \
             openjdk-17-jdk
       
-      - name: Download Android SDK
-        run: |
-          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip commandlinetools-linux-11076708_latest.zip -d $HOME/android-sdk
-          echo "y" | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android-sdk --licenses
-          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android-sdk "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
       
       - name: Download Qt for Android
         run: |
-          wget https://download.qt.io/official_releases/qt/6.6/6.6.2/submodules/qtbase-everywhere-src-6.6.2.tar.xz
-          tar -xf qtbase-everywhere-src-6.6.2.tar.xz
-          cd qtbase-everywhere-src-6.6.2
-          mkdir build && cd build
-          ../configure -prefix $HOME/qt-android -xplatform android-clang -android-ndk $ANDROID_HOME/ndk/25.2.9519653 -android-sdk $ANDROID_HOME -android-abi arm64-v8a -release -nomake tests -nomake examples
-          make -j$(nproc)
-          make install
+          # Скачиваем готовые бинарники Qt для Android
+          wget https://github.com/18446744073709551615/Qt6.6.2-Android-Release/releases/download/v6.6.2/Qt6.6.2-Android-Release.tar.gz
+          tar -xzf Qt6.6.2-Android-Release.tar.gz
+          mv Qt6.6.2-Android-Release $HOME/qt-android
           echo "QT_ANDROID_DIR=$HOME/qt-android" >> $GITHUB_ENV
+          echo "Qt Android installed at: $HOME/qt-android"
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -130,6 +125,7 @@ jobs:
             [[ "$dir" == *"xxhdpi"* ]] && size=144
             [[ "$dir" == *"xxxhdpi"* ]] && size=192
             convert ../logo.png -resize ${size}x${size} "$dir/ic_launcher.png" 2>/dev/null || true
+            cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
           done
       
       - name: Add Auto-Config Feature
@@ -138,7 +134,7 @@ jobs:
           CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -1)
           if [ -n "$CORE_DIR" ]; then
             mkdir -p "$CORE_DIR/api"
-            cat > "$CORE_DIR/api/auto_config.cpp" << 'EOF'
+            cat > "$CORE_DIR/api/auto_config.cpp" << EOF
           #include <QNetworkAccessManager>
           #include <QNetworkReply>
           #include <QJsonDocument>
@@ -153,6 +149,7 @@ jobs:
               QNetworkAccessManager mgr;
               QUrl url("${{ github.event.inputs.api_endpoint }}");
               QNetworkRequest req(url);
+              req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
               req.setRawHeader("x-api-key", "${{ github.event.inputs.api_key }}");
               
               QEventLoop loop;
@@ -169,10 +166,16 @@ jobs:
           EOF
           fi
       
-      - name: Build APK
+      - name: Configure Build
         run: |
           cd amnezia-client
           mkdir -p build && cd build
+          
+          ANDROID_HOME=/usr/local/lib/android/sdk
+          QT_ANDROID_DIR=$HOME/qt-android
+          
+          echo "QT_ANDROID_DIR: $QT_ANDROID_DIR"
+          echo "ANDROID_HOME: $ANDROID_HOME"
           
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
@@ -180,7 +183,10 @@ jobs:
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-33 \
             -DCMAKE_PREFIX_PATH=$QT_ANDROID_DIR
-          
+      
+      - name: Build APK
+        run: |
+          cd amnezia-client/build
           cmake --build . --target apk -- -j2
       
       - name: Upload APK
