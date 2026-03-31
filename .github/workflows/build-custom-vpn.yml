@@ -69,10 +69,15 @@ jobs:
             imagemagick \
             git \
             wget \
-            openjdk-11-jdk \
             unzip \
             libxcb-cursor0 \
             libxcb-cursor-dev
+      
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
       
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
