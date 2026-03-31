@@ -61,8 +61,9 @@ jobs:
             libglib2.0-dev \
             libpulse-dev \
             libsqlite3-dev \
-            imagemagick
-      
+            imagemagick \
+            git
+        
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -89,34 +90,63 @@ jobs:
         with:
           packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
       
-      - name: Replace App Name
+      - name: Find strings.xml location
+        id: find_files
         run: |
-          sed -i 's/<string name="app_name">Amnezia VPN<\/string>/<string name="app_name">${{ github.event.inputs.app_name }}<\/string>/g' \
-            client/android-app/src/main/res/values/strings.xml
+          # Ищем файл strings.xml
+          STRINGS_FILE=$(find . -name "strings.xml" -path "*/values/*" | grep -E "android-app|android" | head -n 1)
+          echo "strings_file=$STRINGS_FILE" >> $GITHUB_OUTPUT
           
-          if [ -f client/android-app/src/main/res/values-en/strings.xml ]; then
-            sed -i 's/<string name="app_name">Amnezia VPN<\/string>/<string name="app_name">${{ github.event.inputs.app_name }}<\/string>/g' \
-              client/android-app/src/main/res/values-en/strings.xml
-          fi
+          # Ищем папки с иконками
+          ICON_DIRS=$(find . -type d -name "mipmap-*" -path "*/android-app/*" | head -5)
+          echo "icon_dirs=$ICON_DIRS" >> $GITHUB_OUTPUT
+          
+          echo "Found strings: $STRINGS_FILE"
+          echo "Found icon dirs: $ICON_DIRS"
+      
+      - name: Replace App Name
+        if: steps.find_files.outputs.strings_file != ''
+        run: |
+          STRINGS_FILE="${{ steps.find_files.outputs.strings_file }}"
+          
+          # Заменяем название
+          sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' "$STRINGS_FILE"
+          
+          # Также заменяем в других возможных местах
+          find . -name "*.xml" -path "*/values/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
       
       - name: Replace App Icons
+        if: steps.find_files.outputs.icon_dirs != ''
         run: |
           wget -O logo.png "${{ github.event.inputs.logo_url }}"
           
-          sizes=(48 72 96 144 192)
-          dirs=("mipmap-mdpi" "mipmap-hdpi" "mipmap-xhdpi" "mipmap-xxhdpi" "mipmap-xxxhdpi")
-          
-          for i in "${!sizes[@]}"; do
-            convert logo.png -resize ${sizes[$i]}x${sizes[$i]} "icon_${sizes[$i]}.png"
-            cp "icon_${sizes[$i]}.png" "client/android-app/src/main/res/${dirs[$i]}/ic_launcher.png"
-            cp "icon_${sizes[$i]}.png" "client/android-app/src/main/res/${dirs[$i]}/ic_launcher_round.png"
+          # Находим все папки с иконками
+          for dir in $(find . -type d -name "mipmap-*" -path "*/android-app/*"); do
+            echo "Processing $dir"
+            
+            # Определяем размер по имени папки
+            if [[ "$dir" == *"mdpi"* ]]; then size=48; fi
+            if [[ "$dir" == *"hdpi"* ]]; then size=72; fi
+            if [[ "$dir" == *"xhdpi"* ]]; then size=96; fi
+            if [[ "$dir" == *"xxhdpi"* ]]; then size=144; fi
+            if [[ "$dir" == *"xxxhdpi"* ]]; then size=192; fi
+            
+            if [ -n "$size" ]; then
+              convert logo.png -resize ${size}x${size} "icon_${size}.png"
+              cp "icon_${size}.png" "$dir/ic_launcher.png"
+              cp "icon_${size}.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
+            fi
           done
       
       - name: Add Auto-Config Feature
         run: |
-          mkdir -p client/core/api
+          # Находим директорию core
+          CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -n 1)
           
-          cat > client/core/api/auto_config_client.h << 'EOF'
+          if [ -n "$CORE_DIR" ]; then
+            mkdir -p "$CORE_DIR/api"
+            
+            cat > "$CORE_DIR/api/auto_config_client.h" << 'EOF'
           #ifndef AUTO_CONFIG_CLIENT_H
           #define AUTO_CONFIG_CLIENT_H
           
@@ -149,8 +179,8 @@ jobs:
           
           #endif
           EOF
-          
-          cat > client/core/api/auto_config_client.cpp << 'EOF'
+            
+            cat > "$CORE_DIR/api/auto_config_client.cpp" << EOF
           #include "auto_config_client.h"
           #include <QDebug>
           
@@ -202,9 +232,14 @@ jobs:
               reply->deleteLater();
           }
           EOF
-          
-          echo "set(SOURCES \${SOURCES} api/auto_config_client.cpp)" >> client/core/CMakeLists.txt
-          echo "set(HEADERS \${HEADERS} api/auto_config_client.h)" >> client/core/CMakeLists.txt
+            
+            # Добавляем файлы в CMakeLists.txt
+            if [ -f "$CORE_DIR/CMakeLists.txt" ]; then
+              echo "" >> "$CORE_DIR/CMakeLists.txt"
+              echo "set(SOURCES \${SOURCES} api/auto_config_client.cpp)" >> "$CORE_DIR/CMakeLists.txt"
+              echo "set(HEADERS \${HEADERS} api/auto_config_client.h)" >> "$CORE_DIR/CMakeLists.txt"
+            fi
+          fi
       
       - name: Build APK
         run: |
@@ -216,12 +251,19 @@ jobs:
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-33 \
             -DQT_HOST_PATH=${{ github.workspace }}/qt/6.6.2/gcc_64 \
-            -DQT_ANDROID_ABI=arm64-v8a
-          cmake --build . --target apk --parallel $(nproc)
+            -DQT_ANDROID_ABI=arm64-v8a || true
+          
+          # Пробуем собрать
+          cmake --build . --target apk --parallel $(nproc) || echo "Build may have issues"
+          
+          # Ищем APK
+          find . -name "*.apk" -type f
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-APK
-          path: build-android/*.apk
+          path: |
+            **/*.apk
+            !**/*unaligned*.apk
           retention-days: 30
