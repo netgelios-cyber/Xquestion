@@ -120,55 +120,29 @@ jobs:
       
       - name: Replace Icons
         run: |
-          # Копируем логотип из custom_files
           LOGO_SOURCE="${{ github.event.inputs.logo_url }}"
           
-          echo "Looking for logo: $LOGO_SOURCE"
-          echo "Current directory: $(pwd)"
-          echo "Custom files directory:"
-          ls -la custom_files/
-          
-          # Проверяем разные варианты пути
           if [[ "$LOGO_SOURCE" == http* ]]; then
-            echo "Downloading from URL..."
             wget -O logo.png "$LOGO_SOURCE"
           elif [ -f "custom_files/$LOGO_SOURCE" ]; then
-            echo "Found in custom_files/$LOGO_SOURCE"
             cp "custom_files/$LOGO_SOURCE" logo.png
           elif [ -f "custom_files/logo.png" ]; then
-            echo "Found in custom_files/logo.png"
             cp "custom_files/logo.png" logo.png
-          elif [ -f "$LOGO_SOURCE" ]; then
-            echo "Found in $LOGO_SOURCE"
-            cp "$LOGO_SOURCE" logo.png
           else
             echo "ERROR: Logo not found"
-            echo "Available files in custom_files:"
             ls -la custom_files/
             exit 1
           fi
           
-          # Проверяем наличие логотипа
-          if [ ! -f logo.png ]; then
-            echo "ERROR: Logo file missing after copy attempt"
-            exit 1
-          fi
-          
-          echo "Logo found, processing icons..."
-          
-          # Заменяем иконки
           for dir in $(find . -type d -name "mipmap-*" -path "*/android-app/*"); do
             size=48
             [[ "$dir" == *"hdpi"* ]] && size=72
             [[ "$dir" == *"xhdpi"* ]] && size=96
             [[ "$dir" == *"xxhdpi"* ]] && size=144
             [[ "$dir" == *"xxxhdpi"* ]] && size=192
-            echo "Processing $dir with size ${size}x${size}"
             convert logo.png -resize ${size}x${size} "$dir/ic_launcher.png" 2>/dev/null || true
             cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
           done
-          
-          echo "Icons replaced successfully"
       
       - name: Add Auto-Config Feature
         run: |
@@ -217,30 +191,39 @@ jobs:
               reply->deleteLater();
           }
           EOF
-            
-            echo "Auto-config feature added to: $CORE_DIR/api/auto_config.cpp"
-          else
-            echo "WARNING: Core directory not found, auto-config feature skipped"
           fi
       
       - name: Build APK
         run: |
           mkdir -p build && cd build
           
-          export QT_ROOT_ANDROID=${{ github.workspace }}/qt_android/6.6.2/android_arm64_v8a
-          export QT_ROOT_HOST=${{ github.workspace }}/qt_host/6.6.2/gcc_64
+          # Устанавливаем пути к Qt
+          QT_ANDROID_PATH="${{ github.workspace }}/qt_android/6.6.2/android_arm64_v8a"
+          QT_HOST_PATH="${{ github.workspace }}/qt_host/6.6.2/gcc_64"
           
-          echo "QT_ROOT_ANDROID: $QT_ROOT_ANDROID"
-          echo "QT_ROOT_HOST: $QT_ROOT_HOST"
-          echo "ANDROID_HOME: $ANDROID_HOME"
+          # Проверяем что пути существуют
+          if [ ! -d "$QT_ANDROID_PATH" ]; then
+            echo "ERROR: Qt Android path not found: $QT_ANDROID_PATH"
+            exit 1
+          fi
           
+          if [ ! -d "$QT_HOST_PATH" ]; then
+            echo "ERROR: Qt Host path not found: $QT_HOST_PATH"
+            exit 1
+          fi
+          
+          echo "Using Qt Android: $QT_ANDROID_PATH"
+          echo "Using Qt Host: $QT_HOST_PATH"
+          
+          # Запускаем CMake с правильными путями
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$QT_ROOT_ANDROID" \
+            -DCMAKE_PREFIX_PATH="$QT_ANDROID_PATH" \
+            -DQt6_DIR="$QT_ANDROID_PATH/lib/cmake/Qt6" \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-33 \
-            -DQT_HOST_PATH="$QT_ROOT_HOST"
+            -DQT_HOST_PATH="$QT_HOST_PATH"
           
           if [ $? -ne 0 ]; then
             echo "CMake configuration failed"
