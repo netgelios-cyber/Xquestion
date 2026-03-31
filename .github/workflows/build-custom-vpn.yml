@@ -22,7 +22,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
       - name: Checkout Amnezia Client
@@ -38,7 +38,7 @@ jobs:
         with:
           path: custom_files
       
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -70,10 +70,33 @@ jobs:
             git \
             wget \
             openjdk-11-jdk \
-            qt6-base-dev \
-            qt6-declarative-dev \
-            qt6-tools-dev \
-            qt6-l10n-tools
+            unzip \
+            libxcb-cursor0 \
+            libxcb-cursor-dev
+      
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'gcc_64'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+          dir: '${{ github.workspace }}/qt_host'
+          install-deps: 'true'
+          cache: 'true'
+      
+      - name: Install Qt for Android
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'android'
+          arch: 'android_arm64_v8a'
+          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
+          dir: '${{ github.workspace }}/qt_android'
+          install-deps: 'true'
+          cache: 'true'
       
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -90,6 +113,16 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+      
+      - name: Set Qt Paths
+        id: qt_paths
+        run: |
+          QT_ANDROID=$(find ${{ github.workspace }}/qt_android -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
+          QT_HOST=$(find ${{ github.workspace }}/qt_host -type d -name "gcc_64" 2>/dev/null | head -1)
+          echo "qt_android=$QT_ANDROID" >> $GITHUB_OUTPUT
+          echo "qt_host=$QT_HOST" >> $GITHUB_OUTPUT
+          echo "Found Qt Android: $QT_ANDROID"
+          echo "Found Qt Host: $QT_HOST"
       
       - name: Replace App Name
         run: |
@@ -172,8 +205,6 @@ jobs:
               reply->deleteLater();
           }
           EOF
-            
-            echo "Auto-config feature added"
           fi
       
       - name: Build APK
@@ -181,13 +212,20 @@ jobs:
           cd amnezia-client
           mkdir -p build && cd build
           
-          export ANDROID_HOME=/usr/local/lib/android/sdk
+          QT_ANDROID="${{ steps.qt_paths.outputs.qt_android }}"
+          QT_HOST="${{ steps.qt_paths.outputs.qt_host }}"
+          ANDROID_HOME=/usr/local/lib/android/sdk
+          
+          echo "QT_ANDROID: $QT_ANDROID"
+          echo "QT_HOST: $QT_HOST"
           
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ANDROID" \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-33
+            -DANDROID_PLATFORM=android-33 \
+            -DQT_HOST_PATH="$QT_HOST"
           
           if [ $? -ne 0 ]; then
             echo "CMake configuration failed"
@@ -195,27 +233,10 @@ jobs:
           fi
           
           cmake --build . --target apk -- -j2
-          
-          if [ $? -ne 0 ]; then
-            echo "Build failed"
-            exit 1
-          fi
-      
-      - name: Find APK
-        run: |
-          echo "Searching for APK..."
-          find amnezia-client/build -name "*.apk" -type f
-          APK_PATH=$(find amnezia-client/build -name "*.apk" -type f | grep -v "unaligned" | head -n 1)
-          if [ -n "$APK_PATH" ]; then
-            cp "$APK_PATH" ./app.apk
-            echo "APK found: $APK_PATH"
-          else
-            echo "No APK found"
-          fi
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-VPN
-          path: ./app.apk
+          path: amnezia-client/build/*.apk
           retention-days: 30
