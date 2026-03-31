@@ -23,6 +23,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/amnezia-vpn/amnezia-client-builder:latest
+      options: --user root
+    
     steps:
       - name: Checkout Amnezia Client
         uses: actions/checkout@v4
@@ -30,104 +34,16 @@ jobs:
           repository: amnezia-vpn/amnezia-client
           submodules: recursive
           fetch-depth: 1
+          path: amnezia-client
       
       - name: Checkout Custom Files
         uses: actions/checkout@v4
         with:
           path: custom_files
       
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
-      
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '11'
-      
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libgl1-mesa-dev \
-            libxcb-util1 \
-            libxcb-util-dev \
-            libxcb-icccm4-dev \
-            libxcb-image0-dev \
-            libxcb-keysyms1-dev \
-            libxcb-randr0-dev \
-            libxcb-render-util0-dev \
-            libxcb-shape0-dev \
-            libxcb-sync-dev \
-            libxcb-xfixes0-dev \
-            libxcb-xinerama0-dev \
-            libxcb-xkb-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libglib2.0-dev \
-            libpulse-dev \
-            libsqlite3-dev \
-            imagemagick \
-            git
-      
-      - name: Setup Qt (Host - Desktop)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.6.2'
-          host: 'linux'
-          target: 'desktop'
-          arch: 'gcc_64'
-          dir: '${{ github.workspace }}/qt'
-          install-deps: 'true'
-          cache: 'true'
-          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
-      
-      - name: Setup Qt (Android)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.6.2'
-          host: 'linux'
-          target: 'android'
-          arch: 'android_arm64_v8a'
-          dir: '${{ github.workspace }}/qt'
-          install-deps: 'true'
-          cache: 'true'
-          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
-      
-      - name: Find Qt paths
-        id: find_qt
-        run: |
-          # Ищем пути к Qt
-          QT_ANDROID_PATH=$(find ${{ github.workspace }}/qt -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
-          QT_HOST_PATH=$(find ${{ github.workspace }}/qt -type d -name "gcc_64" 2>/dev/null | head -1)
-          
-          echo "Found Qt Android: $QT_ANDROID_PATH"
-          echo "Found Qt Host: $QT_HOST_PATH"
-          
-          echo "qt_android_path=$QT_ANDROID_PATH" >> $GITHUB_OUTPUT
-          echo "qt_host_path=$QT_HOST_PATH" >> $GITHUB_OUTPUT
-      
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-      
-      - name: Install Gomobile
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-      
       - name: Replace App Name
         run: |
+          cd amnezia-client
           find . -name "strings.xml" -path "*/android-app/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
           find . -name "strings.xml" -path "*/values-ru/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \; 2>/dev/null || true
       
@@ -147,18 +63,20 @@ jobs:
             exit 1
           fi
           
+          cd amnezia-client
           for dir in $(find . -type d -name "mipmap-*" -path "*/android-app/*"); do
             size=48
             [[ "$dir" == *"hdpi"* ]] && size=72
             [[ "$dir" == *"xhdpi"* ]] && size=96
             [[ "$dir" == *"xxhdpi"* ]] && size=144
             [[ "$dir" == *"xxxhdpi"* ]] && size=192
-            convert logo.png -resize ${size}x${size} "$dir/ic_launcher.png" 2>/dev/null || true
+            convert ../logo.png -resize ${size}x${size} "$dir/ic_launcher.png" 2>/dev/null || true
             cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
           done
       
       - name: Add Auto-Config Feature
         run: |
+          cd amnezia-client
           CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -1)
           if [ -n "$CORE_DIR" ]; then
             mkdir -p "$CORE_DIR/api"
@@ -204,51 +122,20 @@ jobs:
               reply->deleteLater();
           }
           EOF
+            
+            echo "Auto-config feature added to: $CORE_DIR/api/auto_config.cpp"
           fi
       
       - name: Build APK
         run: |
+          cd amnezia-client
           mkdir -p build && cd build
-          
-          QT_ANDROID_PATH="${{ steps.find_qt.outputs.qt_android_path }}"
-          QT_HOST_PATH="${{ steps.find_qt.outputs.qt_host_path }}"
-          
-          if [ -z "$QT_ANDROID_PATH" ]; then
-            echo "ERROR: Qt Android path not found"
-            exit 1
-          fi
-          
-          if [ -z "$QT_HOST_PATH" ]; then
-            echo "ERROR: Qt Host path not found"
-            exit 1
-          fi
-          
-          echo "Using Qt Android: $QT_ANDROID_PATH"
-          echo "Using Qt Host: $QT_HOST_PATH"
-          
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$QT_ANDROID_PATH" \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-33 \
-            -DQT_HOST_PATH="$QT_HOST_PATH"
-          
-          if [ $? -ne 0 ]; then
-            echo "CMake configuration failed"
-            exit 1
-          fi
-          
-          cmake --build . --target apk -- -j2
-          
-          if [ $? -ne 0 ]; then
-            echo "Build failed"
-            exit 1
-          fi
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --target apk -- -j$(nproc)
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-VPN
-          path: build/*.apk
+          path: amnezia-client/build/*.apk
           retention-days: 30
