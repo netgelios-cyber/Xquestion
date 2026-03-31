@@ -6,64 +6,38 @@ on:
       app_name:
         description: 'Название приложения'
         required: true
-        default: 'My Secure VPN'
+        default: 'My VPN'
       logo_url:
-        description: 'Ссылка на логотип (PNG, минимум 512x512)'
+        description: 'Ссылка на логотип (PNG)'
         required: true
       api_endpoint:
-        description: 'URL вашего API сервера'
+        description: 'API endpoint'
         required: true
         default: 'http://195.19.153.74:4001/api/v1/request/awg/'
       api_key:
-        description: 'API ключ'
+        description: 'API key'
         required: true
         default: '9728d7339e07a64f88a9ec22285e06499be36d61f3416503496fa1267c44fde6'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    
     steps:
-      - name: Checkout Amnezia Client
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           repository: amnezia-vpn/amnezia-client
           submodules: recursive
-          fetch-depth: 1
       
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            openjdk-11-jdk \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libgl1-mesa-dev \
-            libxcb-util1 \
-            libxcb-util-dev \
-            libxcb-icccm4-dev \
-            libxcb-image0-dev \
-            libxcb-keysyms1-dev \
-            libxcb-randr0-dev \
-            libxcb-render-util0-dev \
-            libxcb-shape0-dev \
-            libxcb-sync-dev \
-            libxcb-xfixes0-dev \
-            libxcb-xinerama0-dev \
-            libxcb-xkb-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libglib2.0-dev \
-            libpulse-dev \
-            libsqlite3-dev \
-            imagemagick \
-            git
-        
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -71,8 +45,7 @@ jobs:
           host: 'linux'
           target: 'android'
           arch: 'android_arm64_v8a'
-          modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
-          dir: '${{ github.workspace }}/qt'
+          modules: 'qt5compat'
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -83,187 +56,67 @@ jobs:
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-      
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
-      
-      - name: Find strings.xml location
-        id: find_files
-        run: |
-          # Ищем файл strings.xml
-          STRINGS_FILE=$(find . -name "strings.xml" -path "*/values/*" | grep -E "android-app|android" | head -n 1)
-          echo "strings_file=$STRINGS_FILE" >> $GITHUB_OUTPUT
-          
-          # Ищем папки с иконками
-          ICON_DIRS=$(find . -type d -name "mipmap-*" -path "*/android-app/*" | head -5)
-          echo "icon_dirs=$ICON_DIRS" >> $GITHUB_OUTPUT
-          
-          echo "Found strings: $STRINGS_FILE"
-          echo "Found icon dirs: $ICON_DIRS"
       
       - name: Replace App Name
-        if: steps.find_files.outputs.strings_file != ''
         run: |
-          STRINGS_FILE="${{ steps.find_files.outputs.strings_file }}"
-          
-          # Заменяем название
-          sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' "$STRINGS_FILE"
-          
-          # Также заменяем в других возможных местах
-          find . -name "*.xml" -path "*/values/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
+          find . -name "strings.xml" -path "*/android-app/*" -exec sed -i 's/Amnezia VPN/${{ github.event.inputs.app_name }}/g' {} \;
       
-      - name: Replace App Icons
-        if: steps.find_files.outputs.icon_dirs != ''
+      - name: Replace Icons
         run: |
           wget -O logo.png "${{ github.event.inputs.logo_url }}"
-          
-          # Находим все папки с иконками
           for dir in $(find . -type d -name "mipmap-*" -path "*/android-app/*"); do
-            echo "Processing $dir"
-            
-            # Определяем размер по имени папки
-            if [[ "$dir" == *"mdpi"* ]]; then size=48; fi
-            if [[ "$dir" == *"hdpi"* ]]; then size=72; fi
-            if [[ "$dir" == *"xhdpi"* ]]; then size=96; fi
-            if [[ "$dir" == *"xxhdpi"* ]]; then size=144; fi
-            if [[ "$dir" == *"xxxhdpi"* ]]; then size=192; fi
-            
-            if [ -n "$size" ]; then
-              convert logo.png -resize ${size}x${size} "icon_${size}.png"
-              cp "icon_${size}.png" "$dir/ic_launcher.png"
-              cp "icon_${size}.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
-            fi
+            size=48
+            [[ "$dir" == *"hdpi"* ]] && size=72
+            [[ "$dir" == *"xhdpi"* ]] && size=96
+            [[ "$dir" == *"xxhdpi"* ]] && size=144
+            [[ "$dir" == *"xxxhdpi"* ]] && size=192
+            convert logo.png -resize ${size}x${size} "$dir/ic_launcher.png"
+            cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png" 2>/dev/null || true
           done
       
-      - name: Add Auto-Config Feature
+      - name: Add Auto-Config
         run: |
-          # Находим директорию core
-          CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -n 1)
-          
+          CORE_DIR=$(find . -type d -name "core" -path "*/client/*" | head -1)
           if [ -n "$CORE_DIR" ]; then
             mkdir -p "$CORE_DIR/api"
-            
-            cat > "$CORE_DIR/api/auto_config_client.h" << 'EOF'
-          #ifndef AUTO_CONFIG_CLIENT_H
-          #define AUTO_CONFIG_CLIENT_H
-          
-          #include <QObject>
+            cat > "$CORE_DIR/api/auto_config.cpp" << EOF
           #include <QNetworkAccessManager>
           #include <QNetworkReply>
           #include <QJsonDocument>
-          #include <QJsonObject>
           #include <QSettings>
           
-          class AutoConfigClient : public QObject
-          {
-              Q_OBJECT
-          public:
-              explicit AutoConfigClient(QObject *parent = nullptr);
-              void fetchConfig();
-              
-          signals:
-              void configReady(const QJsonObject &config);
-              void error(const QString &message);
-              
-          private slots:
-              void onReplyFinished(QNetworkReply *reply);
-              
-          private:
-              QNetworkAccessManager *m_manager;
-              QString m_apiEndpoint;
-              QString m_apiKey;
-          };
-          
-          #endif
-          EOF
-            
-            cat > "$CORE_DIR/api/auto_config_client.cpp" << EOF
-          #include "auto_config_client.h"
-          #include <QDebug>
-          
-          AutoConfigClient::AutoConfigClient(QObject *parent)
-              : QObject(parent)
-              , m_manager(new QNetworkAccessManager(this))
-              , m_apiEndpoint("${{ github.event.inputs.api_endpoint }}")
-              , m_apiKey("${{ github.event.inputs.api_key }}")
-          {
+          void autoFetchConfig() {
               QSettings settings;
-              if (!settings.value("vpn/auto_configured", false).toBool()) {
-                  fetchConfig();
+              if (settings.value("configured", false).toBool()) return;
+              
+              QNetworkAccessManager mgr;
+              QUrl url("${{ github.event.inputs.api_endpoint }}");
+              QNetworkRequest req(url);
+              req.setRawHeader("x-api-key", "${{ github.event.inputs.api_key }}");
+              
+              QEventLoop loop;
+              QNetworkReply *reply = mgr.post(req, "{}");
+              QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+              loop.exec();
+              
+              if (reply->error() == QNetworkReply::NoError) {
+                  QByteArray data = reply->readAll();
+                  settings.setValue("config", data);
+                  settings.setValue("configured", true);
               }
-          }
-          
-          void AutoConfigClient::fetchConfig()
-          {
-              QUrl url(m_apiEndpoint);
-              QNetworkRequest request(url);
-              request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-              request.setRawHeader("x-api-key", m_apiKey.toUtf8());
-              
-              QJsonObject payload;
-              payload["public_key"] = "auto";
-              
-              QNetworkReply *reply = m_manager->post(request, QJsonDocument(payload).toJson());
-              connect(reply, &QNetworkReply::finished, this, &AutoConfigClient::onReplyFinished);
-          }
-          
-          void AutoConfigClient::onReplyFinished(QNetworkReply *reply)
-          {
-              if (reply->error() != QNetworkReply::NoError) {
-                  emit error(reply->errorString());
-                  reply->deleteLater();
-                  return;
-              }
-              
-              QByteArray response = reply->readAll();
-              QJsonDocument doc = QJsonDocument::fromJson(response);
-              QJsonObject obj = doc.object();
-              
-              if (obj.contains("config")) {
-                  QSettings settings;
-                  settings.setValue("vpn/config", QJsonDocument(obj).toJson());
-                  settings.setValue("vpn/auto_configured", true);
-                  emit configReady(obj);
-              }
-              
               reply->deleteLater();
           }
           EOF
-            
-            # Добавляем файлы в CMakeLists.txt
-            if [ -f "$CORE_DIR/CMakeLists.txt" ]; then
-              echo "" >> "$CORE_DIR/CMakeLists.txt"
-              echo "set(SOURCES \${SOURCES} api/auto_config_client.cpp)" >> "$CORE_DIR/CMakeLists.txt"
-              echo "set(HEADERS \${HEADERS} api/auto_config_client.h)" >> "$CORE_DIR/CMakeLists.txt"
-            fi
           fi
       
       - name: Build APK
         run: |
-          mkdir -p build-android
-          cd build-android
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-33 \
-            -DQT_HOST_PATH=${{ github.workspace }}/qt/6.6.2/gcc_64 \
-            -DQT_ANDROID_ABI=arm64-v8a || true
-          
-          # Пробуем собрать
-          cmake --build . --target apk --parallel $(nproc) || echo "Build may have issues"
-          
-          # Ищем APK
-          find . -name "*.apk" -type f
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --target apk -j2
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.app_name }}-APK
-          path: |
-            **/*.apk
-            !**/*unaligned*.apk
-          retention-days: 30
+          name: ${{ github.event.inputs.app_name }}
+          path: build/*.apk
