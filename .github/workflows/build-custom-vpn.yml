@@ -122,12 +122,17 @@ jobs:
       - name: Set Qt Paths
         id: qt_paths
         run: |
-          QT_ANDROID=$(find ${{ github.workspace }}/qt_android -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
-          QT_HOST=$(find ${{ github.workspace }}/qt_host -type d -name "gcc_64" 2>/dev/null | head -1)
-          echo "qt_android=$QT_ANDROID" >> $GITHUB_OUTPUT
-          echo "qt_host=$QT_HOST" >> $GITHUB_OUTPUT
-          echo "Found Qt Android: $QT_ANDROID"
-          echo "Found Qt Host: $QT_HOST"
+          # Ищем пути к Qt
+          QT_ANDROID_BASE=$(find ${{ github.workspace }}/qt_android -type d -name "android_arm64_v8a" 2>/dev/null | head -1)
+          QT_HOST_BASE=$(find ${{ github.workspace }}/qt_host -type d -name "gcc_64" 2>/dev/null | head -1)
+          
+          echo "qt_android_base=$QT_ANDROID_BASE" >> $GITHUB_OUTPUT
+          echo "qt_host_base=$QT_HOST_BASE" >> $GITHUB_OUTPUT
+          echo "qt_android_cmake=$QT_ANDROID_BASE/lib/cmake/Qt6" >> $GITHUB_OUTPUT
+          
+          echo "Found Qt Android: $QT_ANDROID_BASE"
+          echo "Found Qt Host: $QT_HOST_BASE"
+          echo "Qt6_DIR: $QT_ANDROID_BASE/lib/cmake/Qt6"
       
       - name: Replace App Name
         run: |
@@ -217,16 +222,26 @@ jobs:
           cd amnezia-client
           mkdir -p build && cd build
           
-          QT_ANDROID="${{ steps.qt_paths.outputs.qt_android }}"
-          QT_HOST="${{ steps.qt_paths.outputs.qt_host }}"
+          QT_ANDROID="${{ steps.qt_paths.outputs.qt_android_base }}"
+          QT_HOST="${{ steps.qt_paths.outputs.qt_host_base }}"
+          QT6_DIR="${{ steps.qt_paths.outputs.qt_android_cmake }}"
           ANDROID_HOME=/usr/local/lib/android/sdk
           
           echo "QT_ANDROID: $QT_ANDROID"
           echo "QT_HOST: $QT_HOST"
+          echo "QT6_DIR: $QT6_DIR"
+          
+          # Проверяем, что Qt6Config.cmake существует
+          if [ ! -f "$QT6_DIR/Qt6Config.cmake" ]; then
+            echo "ERROR: Qt6Config.cmake not found at $QT6_DIR"
+            find $QT_ANDROID -name "Qt6Config.cmake" 2>/dev/null
+            exit 1
+          fi
           
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$QT_ANDROID" \
+            -DQt6_DIR="$QT6_DIR" \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-33 \
