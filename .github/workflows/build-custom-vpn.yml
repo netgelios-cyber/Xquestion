@@ -31,6 +31,8 @@ jobs:
       
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653'
       
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -38,7 +40,7 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
       
-      - name: Setup Qt
+      - name: Setup Qt for Android
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.6.2'
@@ -47,6 +49,17 @@ jobs:
           arch: 'android_arm64_v8a'
           modules: 'qt5compat qtimageformats qtmultimedia qtremoteobjects qtshadertools'
           dir: '${{ github.workspace }}/qt'
+          install-deps: 'true'
+          cache: 'true'
+      
+      - name: Setup Qt for Host (Desktop)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.2'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'gcc_64'
+          dir: '${{ github.workspace }}/qt_host'
           install-deps: 'true'
           cache: 'true'
       
@@ -87,6 +100,7 @@ jobs:
           #include <QNetworkReply>
           #include <QJsonDocument>
           #include <QSettings>
+          #include <QEventLoop>
           
           void autoFetchConfig() {
               QSettings settings;
@@ -114,13 +128,31 @@ jobs:
       
       - name: Build APK
         run: |
-          mkdir build && cd build
-          export QT_ROOT_DIR=${{ github.workspace }}/qt/6.6.2/android_arm64_v8a
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DQT_HOST_PATH=${{ github.workspace }}/qt/6.6.2/gcc_64
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH=${{ github.workspace }}/qt_host/6.6.2/gcc_64 \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/25.2.9519653/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-33
           cmake --build . --target apk -j2
+      
+      - name: Find and Upload APK
+        run: |
+          echo "Searching for APK files..."
+          find . -name "*.apk" -type f
+          APK_PATH=$(find . -name "*.apk" -type f | grep -v "unaligned" | head -n 1)
+          if [ -n "$APK_PATH" ]; then
+            echo "APK found at: $APK_PATH"
+            cp "$APK_PATH" ./app.apk
+          else
+            echo "No APK found"
+            exit 1
+          fi
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.app_name }}
-          path: build/*.apk
+          name: ${{ github.event.inputs.app_name }}-VPN
+          path: ./app.apk
+          retention-days: 30
